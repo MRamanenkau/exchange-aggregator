@@ -72,6 +72,17 @@ if not box.space.klines_btc_usdt.index.primary then
     })
 end
 
+function get_spaces()
+    local spaces = {}
+    for _, space in pairs(box.space._space:select()) do
+        local id = space[1]  -- Space ID
+        local name = space[3]  -- Space name
+        if not name:match('^_') then
+            table.insert(spaces, {id, name})
+        end
+    end
+    return spaces
+end
 
 --if not box.sequence.klines_id_seq then
 --    box.schema.sequence.create('klines_id_seq', {min = 1})

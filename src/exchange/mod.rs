@@ -1,4 +1,4 @@
-mod parser;
+pub(crate) mod parser;
 
 use chrono::{Duration, Utc};
 use serde::Deserialize;
@@ -7,6 +7,8 @@ use rusqlite::{params, Connection};
 use std::sync::Arc;
 use std::error::Error;
 use crate::rest_client::RestClient;
+use parser::{Kline, VBS};
+use crate::exchange::parser::KlineParser;
 
 const PAIRS: [&str; 5] = ["BTC_USDT", "TRX_USDT", "ETH_USDT", "DOGE_USDT", "BCH_USDT"];
 const INTERVALS: [&str; 4] = ["MINUTE_5", "MINUTE_15", "HOUR_1", "DAY_1"];
@@ -101,7 +103,7 @@ impl<P: KlineParser> Exchange<P> {
         Ok(())
     }
 
-    fn parse(&self, pair: &str, interval: &str, raw_data: Vec<Vec<CandleRaw>>) -> Result<Vec<Kline>, Box<dyn Error>> {
+    fn parse(&self, pair: &str, interval: &str, raw_data: Vec<Vec<KlineRaw>>) -> Result<Vec<Kline>, Box<dyn Error>> {
         let time_frame = match interval {
             "MINUTE_5" => "5m".to_string(),
             "MINUTE_15" => "15m".to_string(),

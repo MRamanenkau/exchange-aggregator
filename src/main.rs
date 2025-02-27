@@ -2,12 +2,11 @@ mod db;
 mod rest_client;
 mod exchange;
 
-use tarantool::{Client, ClientConfig, Tuple};
-use serde::{Serialize, Deserialize};
 use std::env;
 use thiserror::Error;
 use tokio::sync::OnceCell;
 use crate::exchange::ExchangeBuilder;
+use crate::exchange::parser::PoloniexKlineParser;
 use crate::rest_client::{ReqwestClient, RestClient};
 
 const PAIRS: [&str; 5] = ["BTC_USDT", "TRX_USDT", "ETH_USDT", "DOGE_USDT", "BCH_USDT"];
@@ -33,6 +32,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let start_date = 1704067200000; // Jan 1, 2025, 00:00:00 UTC
 
-    exchange.collect_klines(pairs, intervals, start_date).await?;
+    exchange.collect_klines(
+        Vec::from(PAIRS),
+        Vec::from(INTERVALS),
+        start_date
+    ).await?;
+
     Ok(())
 }
