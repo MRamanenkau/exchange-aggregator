@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use reqwest::{Client, Response, StatusCode};
-use std::{sync::Arc, error::Error};
+use std::sync::Arc;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -15,7 +15,7 @@ pub enum HttpClientError {
 
 #[async_trait]
 pub trait RestClient: Send + Sync {
-    async fn get(&self, url: &str) -> Result<String, HttpClientError>;
+async fn get(&self, url: &str) -> Result<String, HttpClientError>;
 }
 
 #[derive(Clone)]
@@ -34,7 +34,8 @@ impl ReqwestClient {
 #[async_trait]
 impl RestClient for ReqwestClient {
     async fn get(&self, url: &str) -> Result<String, HttpClientError> {
-        let response: Response = self.client.get(url).send().await?;
+        let response = self.client.get(url).send().await
+            .map_err(HttpClientError::RequestError)?;
         if !response.status().is_success() {
             return Err(HttpClientError::UnexpectedStatus(response.status()));
         }

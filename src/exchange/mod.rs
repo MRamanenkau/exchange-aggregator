@@ -1,13 +1,11 @@
 pub(crate) mod parser;
 
-use chrono::{Duration, Utc};
-use serde::Deserialize;
+pub(crate) use chrono::Utc;
 use tokio::sync::mpsc;
-use rusqlite::{params, Connection};
 use std::sync::Arc;
 use std::error::Error;
-use crate::rest_client::RestClient;
-use parser::{Kline, VBS};
+use crate::rest_client::{ReqwestClient, RestClient};
+use crate::db::Database;
 use crate::exchange::parser::KlineParser;
 
 const PAIRS: [&str; 5] = ["BTC_USDT", "TRX_USDT", "ETH_USDT", "DOGE_USDT", "BCH_USDT"];
@@ -15,37 +13,28 @@ const INTERVALS: [&str; 4] = ["MINUTE_5", "MINUTE_15", "HOUR_1", "DAY_1"];
 const LIMIT: i64 = 500;
 const PARALLEL_REQUESTS: usize = 10;
 
-// Raw candle data from Poloniex API
-#[derive(Debug, Deserialize)]
-struct KlineRaw(
-    String, String, String, String, // low, high, open, close
-    String, String, String, String, // amount, quantity, buyTakerAmount, buyTakerQuantity
-    i64, i64, String, String,       // tradeCount, ts, weightedAverage, interval
-    i64, i64                        // startTime, closeTime
-);
-
-pub struct Exchange<P: KlineParser> {
-    rest_url: String,
-    rest_client: Box<dyn RestClient>,
-    db: Arc<Connection>,
+pub struct Exchange<'a, P: KlineParser> {
+rest_url: String,
+    rest_client: Arc<Box<dyn RestClient>>,
+    db: Arc<&'a Database>,
     parser: P,
 }
 
-impl<P: KlineParser> Exchange<P> {
-    pub async fn collect_klines(
-        &self,
-        pairs: Vec<&str>,
-        intervals: Vec<&str>,
-        start_date: i64
-    ) -> Result<(), Box<dyn Error>> {
-        for pair in &pairs {
-            for interval in &intervals {
-                let endpoints = self.build_endpoints(pair, interval, start_date);
-                self.process_endpoints(pair, interval, endpoints).await?;
-            }
+impl<'a, P: KlineParser> Exchange<'a, P> {
+pub async fn collect_klines(
+    &self,
+    pairs: Vec<&str>,
+    intervals: Vec<&str>,
+    start_date: i64
+) -> Result<(), Box<dyn Error>> {
+    for pair in &pairs {
+        for interval in &intervals {
+            let endpoints = self.build_endpoints(pair, interval, start_date);
+            self.process_endpoints(pair, interval, endpoints).await?;
         }
-        Ok(())
     }
+    Ok(())
+}
 
     fn build_endpoints(&self, pair: &str, interval: &str, start_date: i64) -> Vec<String> {
         let now = Utc::now().timestamp_millis();
@@ -75,78 +64,29 @@ impl<P: KlineParser> Exchange<P> {
 
     async fn process_endpoints(&self, pair: &str, interval: &str, endpoints: Vec<String>) -> Result<(), Box<dyn Error>> {
         let (tx, mut rx) = mpsc::channel(PARALLEL_REQUESTS);
+        let rest_client = Arc::clone(&self.rest_client);
 
-        tokio::spawn({
-            let client = self.rest_client.clone();
-            let tx = tx.clone();
-            async move {
-                for endpoint in endpoints {
-                    let client = client.clone();
-                    let tx = tx.clone();
-                    tokio::spawn(async move {
-                        if let Ok(resp) = client.get(&endpoint).send().await {
-                            if let Ok(data) = resp.json::<Vec<Vec<String>>>().await {
-                                let _ = tx.send(data).await; // Send each chunk as it’s ready
-                            }
+        tokio::spawn(async move {
+            for endpoint in endpoints {
+                let tx = tx.clone();
+                let rest_client = Arc::clone(&rest_client);
+                tokio::spawn(async move {
+                    if let Ok(resp) = rest_client.get(&endpoint).await {
+                        if let Ok(data) = serde_json::from_str::<Vec<Vec<String>>>(&resp) {
+                            let _ = tx.send(data).await;
                         }
-                    });
-                }
+                    }
+                });
             }
         });
 
-        // Process each chunk as it arrives
         while let Some(raw_data) = rx.recv().await {
-            let klines = self.parser.parse(pair, interval, vec![raw_data])?;
-            self.store(klines).await?;
-        }
-
-        Ok(())
-    }
-
-    fn parse(&self, pair: &str, interval: &str, raw_data: Vec<Vec<KlineRaw>>) -> Result<Vec<Kline>, Box<dyn Error>> {
-        let time_frame = match interval {
-            "MINUTE_5" => "5m".to_string(),
-            "MINUTE_15" => "15m".to_string(),
-            "HOUR_1" => "1h".to_string(),
-            "DAY_1" => "1d".to_string(),
-            _ => unreachable!(),
-        };
-
-        let mut klines = Vec::new();
-
-        for batch in raw_data {
-            for candle in batch {
-                let total_base = candle.5.parse::<f64>()?;
-                let total_quote = candle.4.parse::<f64>()?;
-                let buy_base = candle.7.parse::<f64>()?;
-                let buy_quote = candle.6.parse::<f64>()?;
-
-                let kline = Kline {
-                    pair: pair.to_string(),
-                    time_frame: time_frame.clone(),
-                    l: candle.0.parse()?,
-                    h: candle.1.parse()?,
-                    o: candle.2.parse()?,
-                    c: candle.3.parse()?,
-                    utc_begin: candle.12,
-                    volume_bs: VBS {
-                        buy_base,
-                        sell_base: total_base - buy_base,
-                        buy_quote,
-                        sell_quote: total_quote - buy_quote,
-                    },
-                };
-                klines.push(kline);
+            let klines = self.parser.parse(pair, interval, raw_data)?;
+            for kline in klines {
+                self.db.save(&kline).await?;
             }
         }
 
-        Ok(klines)
-    }
-
-    async fn store(&self, klines: Vec<Kline>) -> Result<(), Box<dyn Error>> {
-        for kline in klines {
-            self.db.save(&kline).await?;
-        }
         Ok(())
     }
 }
@@ -170,35 +110,35 @@ impl std::fmt::Display for ExchangeBuilderError {
 
 impl Error for ExchangeBuilderError {}
 
-pub struct ExchangeBuilder<P: KlineParser> {
-    rest_url: Option<String>,
-    rest_client: Option<reqwest::Client>,
-    db: Option<Arc<Connection>>,
+pub struct ExchangeBuilder<'a, P: KlineParser> {
+rest_url: Option<String>,
+    rest_client: Option<ReqwestClient>,
+    db: Option<Arc<&'a Database>>,
     parser: Option<P>,
 }
 
-impl<P: KlineParser> ExchangeBuilder<P> {
-    pub fn new() -> Self {
-        Self {
-            rest_url: None,
-            rest_client: None,
-            db: None,
-            parser: None,
-        }
+impl<'a, P: KlineParser> ExchangeBuilder<'a, P> {
+pub fn new() -> Self {
+    Self {
+        rest_url: None,
+        rest_client: None,
+        db: None,
+        parser: None,
     }
+}
 
     pub fn set_rest_url(mut self, rest_url: &str) -> Self {
         self.rest_url = Some(rest_url.to_string());
         self
     }
 
-    pub fn set_rest_client(mut self, client: reqwest::Client) -> Self {
+    pub fn set_rest_client(mut self, client: ReqwestClient) -> Self {
         self.rest_client = Some(client);
         self
     }
 
-    pub fn set_db(mut self, db: Connection) -> Self {
-        self.db = Some(Arc::new(db));
+    pub fn set_db(mut self, db: Arc<&'a Database>) -> Self {
+        self.db = Some(db);
         self
     }
 
@@ -207,11 +147,16 @@ impl<P: KlineParser> ExchangeBuilder<P> {
         self
     }
 
-    pub async fn build(self) -> Result<Exchange<P>, Box<dyn Error>> {
+    pub async fn build(self) -> Result<Exchange<'a, P>, Box<dyn Error>> {
         let rest_url = self.rest_url.ok_or(ExchangeBuilderError::MissingRestUrl)?;
         let rest_client = self.rest_client.ok_or(ExchangeBuilderError::MissingRestClient)?;
         let db = self.db.ok_or(ExchangeBuilderError::MissingDB)?;
         let parser = self.parser.ok_or_else(|| Box::new(std::io::Error::new(std::io::ErrorKind::Other, "Missing parser")))?;
-        Ok(Exchange { rest_url, rest_client, db, parser })
+        Ok(Exchange {
+            rest_url,
+            rest_client: Arc::new(Box::new(rest_client) as Box<dyn RestClient>),
+            db,
+            parser,
+        })
     }
 }

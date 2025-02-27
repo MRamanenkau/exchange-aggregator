@@ -49,7 +49,7 @@ impl Database {
 
     async fn discover_spaces(client: &Client) -> Result<HashMap<String, u32>, DbError> {
         let result = client
-            .call_fn("get_spaces", &()) // Use call_fn with no params
+            .call_fn("get_spaces", &())
             .await
             .map_err(|e| DbError::SpaceDiscovery(format!("Failed to call get_spaces: {}", e)))?;
         let spaces = result.decode::<Vec<(u32, String)>>()?;
@@ -90,7 +90,7 @@ impl Database {
             Value::F64(data.h),
             Value::F64(data.l),
             Value::F64(data.c),
-            Value::Integer(Integer::from(data.utc_begin)), // Corrected for i64
+            Value::Integer(Integer::from(data.utc_begin)),
             Value::F64(data.volume_bs.buy_base),
             Value::F64(data.volume_bs.sell_base),
             Value::F64(data.volume_bs.buy_quote),

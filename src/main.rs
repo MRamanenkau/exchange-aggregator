@@ -5,6 +5,7 @@ mod exchange;
 use std::env;
 use thiserror::Error;
 use tokio::sync::OnceCell;
+use crate::db::Database;
 use crate::exchange::ExchangeBuilder;
 use crate::exchange::parser::PoloniexKlineParser;
 use crate::rest_client::{ReqwestClient, RestClient};
@@ -18,9 +19,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env::set_var("TARANTOOL_PORT", "3301");
     env::set_var("TARANTOOL_USERNAME", "guest");
 
-    let db = db::Database::get().await?;
-
-    println!("Discovered spaces: {:?}", db.list_spaces());
+    let db = Database::get().await?;
+    let db = std::sync::Arc::new(db);
 
     let exchange = ExchangeBuilder::new()
         .set_rest_url("https://api.poloniex.com/markets")
@@ -30,12 +30,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()
         .await?;
 
-    let start_date = 1704067200000; // Jan 1, 2025, 00:00:00 UTC
-
+    let start_date = 1704067200000;
     exchange.collect_klines(
-        Vec::from(PAIRS),
-        Vec::from(INTERVALS),
-        start_date
+        PAIRS.to_vec(),
+        INTERVALS.to_vec(),
+        start_date,
     ).await?;
 
     Ok(())
