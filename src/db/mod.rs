@@ -1,6 +1,5 @@
 use rusty_tarantool::tarantool::{Client, ClientConfig};
 use rmpv::{Value, Integer, Utf8String};
-use std::env;
 use std::collections::HashMap;
 use thiserror::Error;
 use tokio::sync::{OnceCell, Mutex};
@@ -22,12 +21,59 @@ pub enum DbError {
     UnknownSpace(String),
 }
 
+#[derive(Clone, Default)]
+pub struct DbConfigBuilder {
+    host: Option<String>,
+    port: Option<String>,
+    username: Option<String>,
+    password: Option<String>,
+}
+
+impl DbConfigBuilder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn host(mut self, host: impl Into<String>) -> Self {
+        self.host = Some(host.into());
+        self
+    }
+
+    pub fn port(mut self, port: impl Into<String>) -> Self {
+        self.port = Some(port.into());
+        self
+    }
+
+    pub fn username(mut self, username: impl Into<String>) -> Self {
+        self.username = Some(username.into());
+        self
+    }
+
+    // Explicitly optional password method, can be omitted
+    pub fn password(mut self, password: impl Into<String>) -> Self {
+        self.password = Some(password.into());
+        self
+    }
+
+    fn build(self) -> Result<DbConfig, DbError> {
+        let port = self.port.unwrap_or_else(|| "3301".to_string())
+            .parse::<u16>()
+            .map_err(|e| DbError::Config(format!("Invalid port: {}", e)))?;
+        Ok(DbConfig {
+            host: self.host.unwrap_or_else(|| "localhost".to_string()),
+            port,
+            username: self.username.unwrap_or_else(|| "guest".to_string()),
+            password: self.password,
+        })
+    }
+}
+
 #[derive(Clone)]
 struct DbConfig {
     host: String,
     port: u16,
     username: String,
-    password: Option<String>,
+    password: Option<String>, // Optional field
 }
 
 pub struct Database {
@@ -36,15 +82,13 @@ pub struct Database {
 }
 
 impl Database {
-    fn load_config() -> Result<DbConfig, DbError> {
-        let host = env::var("TARANTOOL_HOST").unwrap_or_else(|_| "localhost".to_string());
-        let port = env::var("TARANTOOL_PORT")
-            .unwrap_or_else(|_| "3301".to_string())
-            .parse::<u16>()
-            .map_err(|e| DbError::Config(format!("Invalid port: {}", e)))?;
-        let username = env::var("TARANTOOL_USERNAME").unwrap_or_else(|_| "guest".to_string());
-        let password = env::var("TARANTOOL_PASSWORD").ok();
-        Ok(DbConfig { host, port, username, password })
+    fn from_config(config: DbConfig) -> Result<ClientConfig, DbError> {
+        // Pass password as-is (None means no password provided)
+        Ok(ClientConfig::new(
+            format!("{}:{}", config.host, config.port),
+            config.username,
+            config.password.unwrap_or_default(), // None becomes "" for Tarantool
+        ))
     }
 
     async fn discover_spaces(client: &Client) -> Result<HashMap<String, u32>, DbError> {
@@ -60,13 +104,8 @@ impl Database {
         Ok(space_ids)
     }
 
-    async fn new() -> Result<Self, DbError> {
-        let config = Self::load_config()?;
-        let client_config = ClientConfig::new(
-            format!("{}:{}", config.host, config.port),
-            config.username,
-            config.password.unwrap_or_default(),
-        );
+    async fn new(config: DbConfig) -> Result<Self, DbError> {
+        let client_config = Self::from_config(config)?;
         let client = Client::new(client_config);
         let space_ids = Self::discover_spaces(&client).await?;
         Ok(Database {
@@ -75,8 +114,11 @@ impl Database {
         })
     }
 
-    pub async fn get() -> Result<&'static Self, DbError> {
-        INSTANCE.get_or_try_init(|| async { Self::new().await }).await
+    pub async fn get(builder: DbConfigBuilder) -> Result<&'static Self, DbError> {
+        let config = builder.build()?;
+        INSTANCE
+            .get_or_try_init(|| async { Self::new(config).await })
+            .await
     }
 
     pub async fn save(&self, data: &Kline) -> Result<(), DbError> {

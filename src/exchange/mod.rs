@@ -4,12 +4,11 @@ pub(crate) use chrono::Utc;
 use tokio::sync::mpsc;
 use std::sync::Arc;
 use std::error::Error;
+use std::fmt::format;
 use crate::rest_client::{ReqwestClient, RestClient};
 use crate::db::Database;
 use crate::exchange::parser::KlineParser;
 
-const PAIRS: [&str; 5] = ["BTC_USDT", "TRX_USDT", "ETH_USDT", "DOGE_USDT", "BCH_USDT"];
-const INTERVALS: [&str; 4] = ["MINUTE_5", "MINUTE_15", "HOUR_1", "DAY_1"];
 const LIMIT: i64 = 500;
 const PARALLEL_REQUESTS: usize = 10;
 
@@ -23,8 +22,8 @@ rest_url: String,
 impl<'a, P: KlineParser> Exchange<'a, P> {
 pub async fn collect_klines(
     &self,
-    pairs: Vec<&str>,
-    intervals: Vec<&str>,
+    pairs: Vec<String>,
+    intervals: Vec<String>,
     start_date: i64
 ) -> Result<(), Box<dyn Error>> {
     for pair in &pairs {
@@ -111,7 +110,7 @@ impl std::fmt::Display for ExchangeBuilderError {
 impl Error for ExchangeBuilderError {}
 
 pub struct ExchangeBuilder<'a, P: KlineParser> {
-rest_url: Option<String>,
+base_url: Option<String>,
     rest_client: Option<ReqwestClient>,
     db: Option<Arc<&'a Database>>,
     parser: Option<P>,
@@ -120,15 +119,15 @@ rest_url: Option<String>,
 impl<'a, P: KlineParser> ExchangeBuilder<'a, P> {
 pub fn new() -> Self {
     Self {
-        rest_url: None,
+        base_url: None,
         rest_client: None,
         db: None,
         parser: None,
     }
 }
 
-    pub fn set_rest_url(mut self, rest_url: &str) -> Self {
-        self.rest_url = Some(rest_url.to_string());
+    pub fn set_base_url(mut self, base_url: String) -> Self {
+        self.base_url = Some(base_url);
         self
     }
 
@@ -148,7 +147,7 @@ pub fn new() -> Self {
     }
 
     pub async fn build(self) -> Result<Exchange<'a, P>, Box<dyn Error>> {
-        let rest_url = self.rest_url.ok_or(ExchangeBuilderError::MissingRestUrl)?;
+        let rest_url = self.base_url.ok_or(ExchangeBuilderError::MissingRestUrl)?;
         let rest_client = self.rest_client.ok_or(ExchangeBuilderError::MissingRestClient)?;
         let db = self.db.ok_or(ExchangeBuilderError::MissingDB)?;
         let parser = self.parser.ok_or_else(|| Box::new(std::io::Error::new(std::io::ErrorKind::Other, "Missing parser")))?;
