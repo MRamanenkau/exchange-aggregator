@@ -10,7 +10,6 @@ use crate::db::Database;
 use crate::exchange::parser::KlineParser;
 
 const LIMIT: i64 = 500;
-const PARALLEL_REQUESTS: usize = 10;
 
 pub struct Exchange<'a, P: KlineParser> {
 rest_url: String,
@@ -62,7 +61,7 @@ pub async fn collect_klines(
     }
 
     async fn process_endpoints(&self, pair: &str, interval: &str, endpoints: Vec<String>) -> Result<(), Box<dyn Error>> {
-        let (tx, mut rx) = mpsc::channel(PARALLEL_REQUESTS);
+        let (tx, mut rx) = mpsc::channel(100);
         let rest_client = Arc::clone(&self.rest_client);
 
         tokio::spawn(async move {
